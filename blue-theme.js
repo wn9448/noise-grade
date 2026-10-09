@@ -24,8 +24,13 @@
         // Preserve red ink, including its pale anti-aliased edges. Orange
         // and yellow grade markers are recolored along with green and gray.
         const isRed = chroma > 20 && r === max && (g - b) / chroma < 0.32;
-        if (isRed) continue;
-        const ink = Math.min(1, (255 - min) / (255 - blue[0]));
+        const x = ((i / 4) % canvas.width) / canvas.width;
+        const y = Math.floor(i / 4 / canvas.width) / canvas.height;
+        // Both pulse symbols belong to the blue wordmark, not the red data highlights.
+        const isLogo = (x > 0.64 && x < 0.92 && y > 0.09 && y < 0.17)
+          || (x > 0.30 && x < 0.45 && y > 0.89 && y < 0.94);
+        if (isRed && !isLogo) continue;
+        const ink = Math.min(1, (255 - min) / (255 - (isLogo && isRed ? 80 : blue[0])));
         for (let channel = 0; channel < 3; channel++) {
           pixels[i + channel] = Math.round(255 - (255 - blue[channel]) * ink);
         }
