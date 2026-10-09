@@ -1,4 +1,4 @@
-// Match the bill's blue ink while retaining red highlights and white space.
+// Use the bill's blue for graphics and preserve the original neutral text.
 (() => {
   const image = document.querySelector('img');
   const blue = [46, 48, 146];
@@ -29,8 +29,20 @@
         // Both pulse symbols belong to the blue wordmark, not the red data highlights.
         const isLogo = (x > 0.64 && x < 0.92 && y > 0.09 && y < 0.17)
           || (x > 0.30 && x < 0.45 && y > 0.89 && y < 0.94);
-        if (isRed && !isLogo) continue;
-        const ink = Math.min(1, (255 - min) / (255 - (isLogo && isRed ? 80 : blue[0])));
+        const isChart = y > 0.62 && y < 0.81;
+        const isGrayGaugeArc = x > 0.10 && x < 0.19 && y > 0.39 && y < 0.485;
+        const isIntroText = x > 0.07 && x < 0.55 && y > 0.09 && y < 0.17;
+        const isGradeText = x > 0.29 && x < 0.72 && y > 0.40 && y < 0.478;
+        // Restore original black/gray lettering directly from the source.
+        if (chroma < 18 && min < 220 && !isGrayGaugeArc) continue;
+        // Colored lettering also becomes neutral; keep the pale gauge fill.
+        if ((isIntroText || isGradeText) && chroma > 20 && min < 180) {
+          const gray = isIntroText ? min : Math.round(0.2126 * r + 0.7152 * g + 0.0722 * b);
+          pixels[i] = pixels[i + 1] = pixels[i + 2] = gray;
+          continue;
+        }
+        if (isRed && !isLogo && !isChart) continue;
+        const ink = Math.min(1, (255 - min) / (255 - ((isLogo || isChart) && isRed ? 80 : blue[0])));
         for (let channel = 0; channel < 3; channel++) {
           pixels[i + channel] = Math.round(255 - (255 - blue[channel]) * ink);
         }
