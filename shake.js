@@ -8,11 +8,11 @@
   engine.gravity.scale=.00036;
   const reduced=matchMedia('(prefers-reduced-motion: reduce)').matches;
   const random=(a,b)=>a+Math.random()*(b-a),clamp=(v,a,b)=>Math.max(a,Math.min(b,v));
-  const band=Math.floor(Math.random()*3);
+  const sparse=Math.random()<.15;
   let width=innerWidth,height=innerHeight,items=[],assets=[],walls=[],revealed=false,enabled=false;
   let frame=0,lastTime=0,accumulator=0,previous=null,motionSeen=false,tiltSeen=false,connected=false;
   let targetGravity={x:0,y:1},gravity={x:0,y:1},inertia={x:0,y:0},lastMotion=-Infinity,filter=null;
-  let demoUntil=0,demoCount=0;
+  let demoUntil=0,demoCount=0,lastKick=-Infinity;
   const ready=Promise.all(Array.from({length:11},(_,id)=>new Promise(resolve=>{
     const image=new Image();image.onload=()=>resolve({image,id});image.onerror=()=>resolve(null);image.src=`shake-assets/Im${id}.png`;
   }))).then(images=>{assets=images.filter(Boolean);});
@@ -22,7 +22,7 @@
   }
   function setWalls(){
     for(const wall of walls)Composite.remove(engine.world,wall);
-    const side={isStatic:true,friction:.32,restitution:.12,collisionFilter:{category:1,mask:0xFFFFFFFF,group:0}};
+    const side={isStatic:true,friction:.16,restitution:.12,collisionFilter:{category:1,mask:0xFFFFFFFF,group:0}};
     walls=[Bodies.rectangle(-50,height/2-3000,100,height+6200,side),Bodies.rectangle(width+50,height/2-3000,100,height+6200,side),Bodies.rectangle(width/2,height+50,width+200,100,side),Bodies.rectangle(width/2,-50,width+200,100,{...side,collisionFilter:{category:2,mask:0xFFFFFFFF,group:0}})];
     Composite.add(engine.world,walls);
   }
@@ -42,7 +42,7 @@
     return y+row+6;
   }
   function createBody(p){
-    const options={friction:.38,frictionStatic:.58,frictionAir:.006,restitution:.12,density:.0015,slop:.035};
+    const options={friction:.19,frictionStatic:.26,frictionAir:.006,restitution:.12,density:.0015,slop:.035};
     const parts=window.NOISE_SHAPES[p.id].map(shape=>{
       const vertices=shape.map(([x,y])=>({x:x*p.w,y:y*p.h}));
       const center=Vertices.centre(vertices);
@@ -58,17 +58,33 @@
   function reveal(){
     if(revealed||!enabled||!assets.length)return;
     revealed=true;intro.hidden=true;
-    const ranges=[[5,9],[13,21],[28,40]],r=ranges[band],count=Math.floor(random(r[0],r[1]+1));
-    const fill=[random(.25,.37),random(.5,.65),random(.87,.96)][band];
+    const count=Math.floor(sparse?random(5,9):random(25,39));
     items=Array.from({length:count},(_,i)=>{
       const asset=assets[Math.floor(random(0,assets.length))];
       const factor=i%3===0?random(1.25,1.6):i%3===1?random(.45,.65):random(.8,1.05);
       const w=Math.min(width*.30,150)*factor;return {...asset,w,h:w*asset.image.height/asset.image.width};
     });
-    // Shuffle sizes rather than dropping large and small letters in sorted rows.
-    let total=pack(items);const grow=Math.min(1.7,Math.sqrt(height*fill/total));
+    // Reproduce the former size baseline, then double its largest glyph.
+    let total=pack(items),fill=sparse?.32:.92;
+    const grow=Math.min(1.7,Math.sqrt(height*fill/total));
     items.forEach(p=>{p.w=Math.min(width*.43,p.w*grow);p.h=p.w*p.image.height/p.image.width;});
     total=pack(items);while(total>height*fill){items.forEach(p=>{p.w*=.97;p.h*=.97;});total=pack(items);}
+    const largest=items.reduce((a,b)=>a.w>b.w?a:b);
+    largest.w=Math.min(largest.w*2,width*.80,height*.62);
+    largest.h=largest.w*largest.image.height/largest.image.width;
+    function silhouetteArea(p){
+      return window.NOISE_SHAPES[p.id].reduce((sum,polygon)=>sum+Math.abs(polygon.reduce((area,v,i)=>{
+        const next=polygon[(i+1)%polygon.length];return area+v[0]*next[1]-next[0]*v[1];
+      },0))/2,0)*p.w*p.h;
+    }
+    if(!sparse){
+      // Budget actual solid glyph area, rather than transparent rectangular
+      // shelves: normal visits form a tall, full pile after settling.
+      const target=width*height*random(.51,.56),remaining=items.filter(p=>p!==largest);
+      const scale=Math.sqrt(Math.max(1,target-silhouetteArea(largest))/remaining.reduce((n,p)=>n+silhouetteArea(p),0));
+      remaining.forEach(p=>{p.w=Math.min(p.w*scale,largest.w*.79,width*.44);p.h=p.w*p.image.height/p.image.width;});
+    }
+    total=pack(items);
     items.forEach(p=>{p.y-=total+20;});
     Composite.add(engine.world,items.map(createBody));wake();
   }
@@ -92,9 +108,9 @@
     if(now>demoUntil&&demoUntil){demoUntil=0;targetGravity={x:0,y:1};}
     if(now-lastMotion>110){inertia.x*=.82;inertia.y*=.82;}
     for(const p of items){
-      if(!dropping){const strength=reduced?.35:1;Body.applyForce(p.body,p.body.position,{x:p.body.mass*inertia.x*.00013*strength,y:p.body.mass*inertia.y*.00013*strength});}
+      if(p.entered){const strength=reduced?.35:1;Body.applyForce(p.body,p.body.position,{x:p.body.mass*inertia.x*.00032*strength,y:p.body.mass*inertia.y*.00032*strength});}
       const speed=Math.hypot(p.body.velocity.x,p.body.velocity.y);
-      if(speed>18)Body.setVelocity(p.body,{x:p.body.velocity.x*18/speed,y:p.body.velocity.y*18/speed});
+      if(speed>25)Body.setVelocity(p.body,{x:p.body.velocity.x*25/speed,y:p.body.velocity.y*25/speed});
     }
     Engine.update(engine,ms);items.forEach(keepInside);
   }
@@ -118,14 +134,25 @@
     if(!a||![a.x,a.y,a.z].every(Number.isFinite))return;
     motionSeen=true;if(!revealed)status.textContent='';
     const now=performance.now(),current=[a.x,a.y,a.z];
-    if(previous&&now-previous.time<250&&Math.hypot(...current.map((v,i)=>v-previous.values[i]))>10&&!revealed)reveal();
+    if(previous&&now-previous.time<250&&Math.hypot(...current.map((v,i)=>v-previous.values[i]))>8&&!revealed)reveal();
     previous={values:current,time:now};
     filter=filter?filter.map((v,i)=>v*.92+current[i]*.08):current.slice();
     const linear=e.acceleration;
-    const values=linear&&[linear.x,linear.y].every(Number.isFinite)?[linear.x,linear.y]:[a.x-filter[0],a.y-filter[1]];
+    const highpass=[a.x-filter[0],a.y-filter[1]];
+    const validLinear=linear&&[linear.x,linear.y].every(Number.isFinite);
+    // Some phones report zero linear acceleration despite changing raw data.
+    const values=validLinear&&(Math.hypot(linear.x,linear.y)>.2||Math.hypot(...highpass)<2)?[linear.x,linear.y]:highpass;
     // Inertial force opposes the phone's acceleration; no automatic upward kick.
     const force=screenVector(-values[0],values[1]);
-    inertia.x=inertia.x*.5+clamp(force.x,-18,18)*.5;inertia.y=inertia.y*.5+clamp(force.y,-18,18)*.5;
+    inertia.x=inertia.x*.2+clamp(force.x,-24,24)*.8;inertia.y=inertia.y*.2+clamp(force.y,-24,24)*.8;
+    // Preserve a short directional kick even when opposite sensor samples
+    // arrive between rendering frames. Never inject an artificial upward force.
+    if(revealed&&Math.hypot(force.x,force.y)>3&&now-lastKick>90){
+      lastKick=now;const gain=reduced?.22:.8;
+      for(const p of items){if(!p.entered)continue;
+        Body.setVelocity(p.body,{x:clamp(p.body.velocity.x+clamp(force.x,-14,14)*gain,-25,25),y:clamp(p.body.velocity.y+clamp(force.y,-14,14)*gain,-25,25)});
+      }
+    }
     if(!tiltSeen)targetGravity=screenVector(-filter[0]/9.81,filter[1]/9.81);
     lastMotion=now;
   }
