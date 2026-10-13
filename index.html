@@ -1,26 +1,21 @@
-<!DOCTYPE html>
+<!doctype html>
 <html lang="ko">
 <head>
-  <meta charset="UTF-8"/>
-  <meta name="viewport" content="width=393, initial-scale=1.0, maximum-scale=1.0, user-scalable=no"/>
-  <title>나의 소음 등급 — 한국소음공사</title>
-  <style>
-    * { margin: 0; padding: 0; box-sizing: border-box; }
-    html, body {
-      background: #f7f7fb;
-      width: 100%;
-      overflow-x: hidden;
-    }
-    img, canvas {
-      display: block;
-      width: 100%;
-      max-width: 393px;
-      margin: 0 auto;
-    }
-  </style>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="theme-color" content="#f7f7fb">
+<title>흔들면 들리는 글자 — 한국소음공사</title>
+<link rel="stylesheet" href="shake.css?v=1">
+<script src="shake.js?v=1" defer></script>
 </head>
 <body>
-  <img src="page.jpg?v=3" alt="나의 소음 등급"/>
-  <script src="blue-theme.js?v=4" defer></script>
+<header><a class="brand" href="./" aria-label="한국소음공사 처음으로"><svg viewBox="0 0 60 36" aria-hidden="true"><path d="M1 18h19V5l18 27V18h21"/></svg><span>한국소음공사</span></a><button id="reset" class="quiet" hidden>비우기</button></header>
+<main>
+<canvas id="stage" aria-label="흔들 때마다 파란 입체 글자들이 나타나는 화면"></canvas>
+<section id="intro"><p class="eyebrow">내 움직임이 만드는 소음</p><h1>흔들면,<br>소리가 보입니다.</h1><p class="description">휴대폰을 가볍게 흔들어 보세요.<br>움직임을 따라 소음이 글자가 됩니다.</p><button id="start" class="primary">흔들기 시작</button><p class="note">동작 접근을 요청하면 허용해 주세요.</p></section>
+<div id="controls" hidden><p id="status" role="status" aria-live="polite">휴대폰을 가볍게 흔들어 보세요.</p><button id="demo" class="primary">눌러서 체험</button><p class="note">흔들기 대신 버튼으로도 체험할 수 있어요.</p></div>
+<noscript>이 체험은 자바스크립트를 켜야 이용할 수 있습니다.</noscript>
+</main>
+<footer>소음없는 세상을 만드는 한국소음공사</footer>
 </body>
 </html>
