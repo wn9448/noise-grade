@@ -151,7 +151,7 @@
     if(!assets.length){status.textContent='글자를 불러오지 못했어요. 새로고침해 주세요.';return;}
     enabled=true;status.textContent='';
     if(typeof window.DeviceMotionEvent?.requestPermission==='function'||typeof window.DeviceOrientationEvent?.requestPermission==='function'){
-      start.hidden=false;status.textContent='버튼을 누르고 동작 접근을 허용해 주세요.';
+      start.hidden=false;status.textContent='';
     }else connect(!!window.DeviceMotionEvent,!!window.DeviceOrientationEvent);
     if(!window.DeviceMotionEvent||matchMedia('(pointer: fine)').matches)demo.hidden=false;
   });
