@@ -1,175 +1,164 @@
 (() => {
   'use strict';
-  const canvas = document.querySelector('#stage');
-  const ctx = canvas.getContext('2d');
-  const intro = document.querySelector('#intro');
-  const start = document.querySelector('#start');
-  const demo = document.querySelector('#demo');
-  const status = document.querySelector('#status');
-  const reduced = matchMedia('(prefers-reduced-motion: reduce)').matches;
-  let width=innerWidth,height=innerHeight,items=[],assets=[],enabled=false,revealed=false;
-  let previous=null,lastShake=-Infinity,frame=0,lastTime=0,sensorSeen=false;
-  const ready=Promise.all(Array.from({length:11},(_,i)=>new Promise(resolve=>{
-    const image=new Image();image.onload=()=>resolve(image);image.onerror=()=>resolve(null);
-    image.src=`shake-assets/Im${i}.png`;
+  const canvas=document.querySelector('#stage'),ctx=canvas.getContext('2d');
+  const intro=document.querySelector('#intro'),start=document.querySelector('#start'),demo=document.querySelector('#demo'),status=document.querySelector('#status');
+  if(!window.Matter||!window.NOISE_SHAPES){status.textContent='화면을 불러오지 못했어요. 새로고침해 주세요.';return;}
+  const {Engine,Bodies,Body,Composite,Vertices}=Matter;
+  const engine=Engine.create({positionIterations:10,velocityIterations:8,enableSleeping:false});
+  engine.gravity.scale=.00036;
+  const reduced=matchMedia('(prefers-reduced-motion: reduce)').matches;
+  const random=(a,b)=>a+Math.random()*(b-a),clamp=(v,a,b)=>Math.max(a,Math.min(b,v));
+  const band=Math.floor(Math.random()*3);
+  let width=innerWidth,height=innerHeight,items=[],assets=[],walls=[],revealed=false,enabled=false;
+  let frame=0,lastTime=0,accumulator=0,previous=null,motionSeen=false,tiltSeen=false,connected=false;
+  let targetGravity={x:0,y:1},gravity={x:0,y:1},inertia={x:0,y:0},lastMotion=-Infinity,filter=null;
+  let demoUntil=0,demoCount=0;
+  const ready=Promise.all(Array.from({length:11},(_,id)=>new Promise(resolve=>{
+    const image=new Image();image.onload=()=>resolve({image,id});image.onerror=()=>resolve(null);image.src=`shake-assets/Im${id}.png`;
   }))).then(images=>{assets=images.filter(Boolean);});
-  const random=(a,b)=>a+Math.random()*(b-a);
-  const clamp=(value,min,max)=>Math.max(min,Math.min(max,value));
-  function bounds(p){
-    // Rotated image bounds, not just the center, stay inside the viewport.
-    const c=Math.abs(Math.cos(p.angle)),s=Math.abs(Math.sin(p.angle));
-    return {x:(c*p.w+s*p.h)/2,y:(s*p.w+c*p.h)/2};
+  function screenVector(x,y){
+    const angle=((window.screen?.orientation?.angle ?? window.orientation ?? 0)*Math.PI)/180;
+    return {x:x*Math.cos(angle)+y*Math.sin(angle),y:-x*Math.sin(angle)+y*Math.cos(angle)};
   }
-  // Density is chosen once per page visit; shaking never changes this set.
-  const densityBand=Math.floor(Math.random()*3);
-  function overlaps(p,x=p.x,y=p.y,angle=p.angle){
-    const box=bounds({...p,angle});
-    return items.some(q=>{
-      if(q===p)return false;const other=bounds(q);
-      return Math.abs(x-q.x)<box.x+other.x+2-.001 && Math.abs(y-q.y)<box.y+other.y+2-.001;
-    });
-  }
-  function pack(list,maxWidth){
-    let x=4,y=4,rowHeight=0;
-    for(const p of list){
-      if(x+p.w>maxWidth-4){x=4;y+=rowHeight+4;rowHeight=0;}
-      p.x=x+p.w/2;p.y=y+p.h/2;x+=p.w+4;rowHeight=Math.max(rowHeight,p.h);
-    }
-    return y+rowHeight+4;
-  }
-  function fit(list,targetHeight){
-    let total=pack(list,width);
-    while(total>targetHeight){list.forEach(p=>{p.w*=.97;p.h*=.97;});total=pack(list,width);}
-    return total;
+  function setWalls(){
+    for(const wall of walls)Composite.remove(engine.world,wall);
+    const side={isStatic:true,friction:.32,restitution:.12,collisionFilter:{category:1,mask:0xFFFFFFFF,group:0}};
+    walls=[Bodies.rectangle(-50,height/2-3000,100,height+6200,side),Bodies.rectangle(width+50,height/2-3000,100,height+6200,side),Bodies.rectangle(width/2,height+50,width+200,100,side),Bodies.rectangle(width/2,-50,width+200,100,{...side,collisionFilter:{category:2,mask:0xFFFFFFFF,group:0}})];
+    Composite.add(engine.world,walls);
   }
   function resize(){
-    width=innerWidth;height=innerHeight;
-    const ratio=Math.min(devicePixelRatio||1,2);canvas.width=Math.round(width*ratio);canvas.height=Math.round(height*ratio);
-    ctx.setTransform(ratio,0,0,ratio,0,0);
+    const oldW=width,oldH=height;width=innerWidth;height=innerHeight;
+    const ratio=Math.min(devicePixelRatio||1,2);canvas.width=Math.round(width*ratio);canvas.height=Math.round(height*ratio);ctx.setTransform(ratio,0,0,ratio,0,0);
     if(items.length){
-      items.forEach(p=>{p.angle=0;p.w=Math.min(p.w,width*.42);p.h=p.w*p.image.height/p.image.width;});
-      const total=fit(items,height-12);
-      items.forEach(p=>{p.y+=height-total-4;p.entered=true;p.vx=0;p.vy=0;p.spin=0;});
+      // Uniformly scale the whole arrangement so resizing cannot squeeze bodies together.
+      const scale=Math.min(width/oldW,height/oldH);
+      for(const p of items){const position={x:p.body.position.x*scale+(width-oldW*scale)/2,y:p.body.position.y*scale+(height-oldH*scale)/2};Body.scale(p.body,scale,scale);Body.setPosition(p.body,position);p.w*=scale;p.h*=scale;p.offset.x*=scale;p.offset.y*=scale;}
     }
-    wake();
+    setWalls();wake();
   }
-  function wake(){if(!frame&&!document.hidden){lastTime=0;frame=requestAnimationFrame(draw);}}
-  function reveal(){
-    if(revealed||!assets.length)return;
-    revealed=true;intro.hidden=true;
-    const ranges=[[5,9],[13,21],[28,40]], range=ranges[densityBand];
-    const count=Math.floor(random(range[0],range[1]+1));
-    const fill=[random(.24,.36),random(.50,.65),random(.86,.96)][densityBand];
-    // Alternating large and small artwork makes the size contrast unmistakable.
-    items=Array.from({length:count},(_,i)=>{
-      const image=assets[Math.floor(random(0,assets.length))];
-      const factor=i%3===0?random(1.25,1.6):i%3===1?random(.45,.65):random(.8,1.05);
-      const w=Math.min(width*.30,150)*factor;
-      return {image,w,h:w*image.height/image.width,x:0,y:0,vx:0,vy:0,angle:0,spin:0,entered:false};
+  function pack(list){
+    let x=6,y=6,row=0;
+    for(const p of list){if(x+p.w>width-6){x=6;y+=row+7;row=0;}p.x=x+p.w/2;p.y=y+p.h/2;x+=p.w+7;row=Math.max(row,p.h);}
+    return y+row+6;
+  }
+  function createBody(p){
+    const options={friction:.38,frictionStatic:.58,frictionAir:.006,restitution:.12,density:.0015,slop:.035};
+    const parts=window.NOISE_SHAPES[p.id].map(shape=>{
+      const vertices=shape.map(([x,y])=>({x:x*p.w,y:y*p.h}));
+      const center=Vertices.centre(vertices);
+      return Bodies.fromVertices(center.x,center.y,[vertices],options,false,0,0,0);
     });
-    // A shelf layout guarantees the randomly chosen set can fit in this frame.
-    items.sort((a,b)=>b.h-a.h);
-    const natural=pack(items,width),grow=Math.min(1.7,Math.sqrt(height*fill/natural));
+    const body=Body.create({...options,parts,collisionFilter:{category:1,mask:1,group:0}});
+    p.offset={x:-body.position.x,y:-body.position.y};
+    Body.setPosition(body,{x:p.x,y:p.y});
+    Body.setVelocity(body,{x:random(-.25,.25),y:random(.4,1.2)});
+    Body.setAngularVelocity(body,random(-.007,.007));
+    p.body=body;p.entered=false;return body;
+  }
+  function reveal(){
+    if(revealed||!enabled||!assets.length)return;
+    revealed=true;intro.hidden=true;
+    const ranges=[[5,9],[13,21],[28,40]],r=ranges[band],count=Math.floor(random(r[0],r[1]+1));
+    const fill=[random(.25,.37),random(.5,.65),random(.87,.96)][band];
+    items=Array.from({length:count},(_,i)=>{
+      const asset=assets[Math.floor(random(0,assets.length))];
+      const factor=i%3===0?random(1.25,1.6):i%3===1?random(.45,.65):random(.8,1.05);
+      const w=Math.min(width*.30,150)*factor;return {...asset,w,h:w*asset.image.height/asset.image.width};
+    });
+    // Shuffle sizes rather than dropping large and small letters in sorted rows.
+    let total=pack(items);const grow=Math.min(1.7,Math.sqrt(height*fill/total));
     items.forEach(p=>{p.w=Math.min(width*.43,p.w*grow);p.h=p.w*p.image.height/p.image.width;});
-    const total=fit(items,height*fill);
-    items.forEach(p=>{p.y+=reduced?height-total-4:-total-20;p.entered=reduced;});
-    wake();
+    total=pack(items);while(total>height*fill){items.forEach(p=>{p.w*=.97;p.h*=.97;});total=pack(items);}
+    items.forEach(p=>{p.y-=total+20;});
+    Composite.add(engine.world,items.map(createBody));wake();
   }
-  function shake(dx=0,dy=0){
-    if(!enabled||!assets.length)return;
-    if(!revealed){reveal();return;}
-    if(items.some(p=>!p.entered))return;
-    items.forEach(p=>{
-      const strength=reduced?.28:1;
-      p.vx=clamp(p.vx+(dx*17+random(-250,250))*strength,-850,850);
-      p.vy=clamp(p.vy+(dy*12-random(300,600))*strength,-950,850);
-      p.spin=clamp(p.spin+random(-3,3)*strength,-5,5);
-    });wake();
+  function keepInside(p){
+    const b=p.body;
+    if(!p.entered&&b.bounds.min.y>=1){p.entered=true;b.collisionFilter.mask=3;}
+    // Safety guard against rare high-speed wall tunneling. Ordinary wall contact
+    // is resolved by the physics engine, using the glyph's actual silhouette.
+    let dx=0,dy=0;
+    if(b.bounds.min.x<-.5)dx=-b.bounds.min.x;else if(b.bounds.max.x>width+.5)dx=width-b.bounds.max.x;
+    if(b.bounds.max.y>height+.5)dy=height-b.bounds.max.y;
+    if(p.entered&&b.bounds.min.y<-.5)dy=-b.bounds.min.y;
+    if(dx||dy){Body.translate(b,{x:dx,y:dy});Body.setVelocity(b,{x:dx?-b.velocity.x*.12:b.velocity.x,y:dy?-b.velocity.y*.12:b.velocity.y});}
   }
-  function moveAxis(p,axis,delta){
-    if(!delta)return;
-    const b=bounds(p),horizontal=axis==='x',extent=horizontal?b.x:b.y;
-    let next=p[axis]+delta,contact=null;
-    const limit=horizontal?width:height;
-    if(horizontal||p.entered)next=Math.max(extent+2,next);
-    next=Math.min(limit-extent-2,next);
-    // Sweep full sprite bounds, including transparent margins. This is stricter
-    // than silhouette collision and guarantees no visible lettering overlaps.
-    for(const q of items){
-      if(q===p)continue;const qb=bounds(q);
-      const cross=horizontal?'y':'x',crossExtent=horizontal?b.y:b.x,qCross=horizontal?qb.y:qb.x;
-      if(Math.abs(p[cross]-q[cross])>=crossExtent+qCross+2-.001)continue;
-      const otherExtent=horizontal?qb.x:qb.y;
-      if(delta>0 && q[axis]>=p[axis]){
-        const stop=q[axis]-otherExtent-extent-2;
-        if(next>stop){next=Math.max(p[axis],stop);contact=q;}
-      }else if(delta<0 && q[axis]<=p[axis]){
-        const stop=q[axis]+otherExtent+extent+2;
-        if(next<stop){next=Math.min(p[axis],stop);contact=q;}
-      }
+  function step(ms,now=performance.now()){
+    const dropping=items.some(p=>!p.entered);
+    const target=dropping?{x:0,y:1}:targetGravity;
+    const blend=1-Math.exp(-ms/110);
+    gravity.x+=(target.x-gravity.x)*blend;gravity.y+=(target.y-gravity.y)*blend;
+    engine.gravity.x=gravity.x;engine.gravity.y=gravity.y;
+    if(now>demoUntil&&demoUntil){demoUntil=0;targetGravity={x:0,y:1};}
+    if(now-lastMotion>110){inertia.x*=.82;inertia.y*=.82;}
+    for(const p of items){
+      if(!dropping){const strength=reduced?.35:1;Body.applyForce(p.body,p.body.position,{x:p.body.mass*inertia.x*.00013*strength,y:p.body.mass*inertia.y*.00013*strength});}
+      const speed=Math.hypot(p.body.velocity.x,p.body.velocity.y);
+      if(speed>18)Body.setVelocity(p.body,{x:p.body.velocity.x*18/speed,y:p.body.velocity.y*18/speed});
     }
-    const hit=Math.abs(next-(p[axis]+delta))>.001;
-    p[axis]=next;
-    if(hit){const velocity=horizontal?'vx':'vy';if(contact)contact[velocity]+=p[velocity]*.12;
-      p[velocity]*=-.18;if(Math.abs(p[velocity])<25)p[velocity]=0;p.spin*=.8;}
-  }
-  function step(dt){
-    const landed=items.every(p=>p.entered);
-    // Bottom bodies move first so an entire stack can settle together.
-    const ordered=[...items].sort((a,b)=>b.y-a.y);
-    for(const p of ordered){
-      p.vy=clamp(p.vy+900*dt,-950,950);p.vx*=Math.pow(.99,dt*60);
-      moveAxis(p,'x',p.vx*dt);moveAxis(p,'y',p.vy*dt);
-      const b=bounds(p);if(!p.entered&&p.y>=b.y+2)p.entered=true;
-      if(landed&&p.spin){
-        const angle=p.angle+p.spin*dt,box=bounds({...p,angle});
-        if(p.x-box.x>=2&&p.x+box.x<=width-2&&p.y-box.y>=2&&p.y+box.y<=height-2&&!overlaps(p,p.x,p.y,angle))p.angle=angle;
-        else p.spin*=-.35;
-        p.spin*=Math.pow(.995,dt*60);
-      }
-    }
+    Engine.update(engine,ms);items.forEach(keepInside);
   }
   function draw(time){
-    frame=0;const elapsed=lastTime?Math.min((time-lastTime)/1000,.04):1/60;lastTime=time;
-    if(revealed){const steps=Math.ceil(elapsed/.012);for(let i=0;i<steps;i++)step(elapsed/steps);}
+    frame=0;const elapsed=lastTime?Math.min(time-lastTime,50):16.667;lastTime=time;
+    if(revealed){accumulator+=elapsed;while(accumulator>=8.333){step(8.333,time);accumulator-=8.333;}}
     ctx.clearRect(0,0,width,height);
-    for(const p of items){ctx.save();ctx.translate(p.x,p.y);ctx.rotate(p.angle);ctx.drawImage(p.image,-p.w/2,-p.h/2,p.w,p.h);ctx.restore();}
+    for(const p of items){ctx.save();ctx.translate(p.body.position.x,p.body.position.y);ctx.rotate(p.body.angle);ctx.drawImage(p.image,p.offset.x,p.offset.y,p.w,p.h);ctx.restore();}
     if(revealed&&!document.hidden)frame=requestAnimationFrame(draw);
   }
-  function onMotion(event){
-    if(!enabled||document.hidden)return;
-    const a=event.accelerationIncludingGravity||event.acceleration;
-    if(!a||![a.x,a.y,a.z].every(Number.isFinite))return;
-    sensorSeen=true;if(!revealed)status.textContent='';
-    const current=[a.x,a.y,a.z],now=performance.now();
-    if(previous&&now-previous.time<250){
-      const delta=current.map((v,i)=>v-previous.values[i]);
-      if(Math.hypot(...delta)>11&&now-lastShake>420){lastShake=now;shake(delta[0],delta[1]);}
-    }
-    previous={values:current,time:now};
+  function wake(){if(!frame&&!document.hidden){lastTime=0;accumulator=0;frame=requestAnimationFrame(draw);}}
+  function onOrientation(e){
+    if(document.hidden||!Number.isFinite(e.beta)||!Number.isFinite(e.gamma))return;
+    tiltSeen=true;const beta=e.beta*Math.PI/180,gamma=e.gamma*Math.PI/180;
+    // Project world gravity onto the screen, including landscape orientation.
+    targetGravity=screenVector(Math.sin(gamma)*Math.cos(beta),Math.sin(beta));
   }
-  function connect(){window.addEventListener('devicemotion',onMotion,{passive:true});setTimeout(()=>{
-    if(!sensorSeen){demo.hidden=false;if(!revealed)status.textContent='흔들기가 감지되지 않으면 아래 버튼을 눌러 주세요.';}
-  },6000);}
+  function onMotion(e){
+    if(!enabled||document.hidden)return;
+    const a=e.accelerationIncludingGravity;
+    if(!a||![a.x,a.y,a.z].every(Number.isFinite))return;
+    motionSeen=true;if(!revealed)status.textContent='';
+    const now=performance.now(),current=[a.x,a.y,a.z];
+    if(previous&&now-previous.time<250&&Math.hypot(...current.map((v,i)=>v-previous.values[i]))>10&&!revealed)reveal();
+    previous={values:current,time:now};
+    filter=filter?filter.map((v,i)=>v*.92+current[i]*.08):current.slice();
+    const linear=e.acceleration;
+    const values=linear&&[linear.x,linear.y].every(Number.isFinite)?[linear.x,linear.y]:[a.x-filter[0],a.y-filter[1]];
+    // Inertial force opposes the phone's acceleration; no automatic upward kick.
+    const force=screenVector(-values[0],values[1]);
+    inertia.x=inertia.x*.5+clamp(force.x,-18,18)*.5;inertia.y=inertia.y*.5+clamp(force.y,-18,18)*.5;
+    if(!tiltSeen)targetGravity=screenVector(-filter[0]/9.81,filter[1]/9.81);
+    lastMotion=now;
+  }
+  function connect(motion=true,orientation=true){
+    if(connected)return;connected=true;
+    if(motion)window.addEventListener('devicemotion',onMotion,{passive:true});
+    if(orientation)window.addEventListener('deviceorientation',onOrientation,{passive:true});
+    setTimeout(()=>{if(!motionSeen){demo.hidden=false;if(!revealed)status.textContent='흔들기가 감지되지 않으면 아래 버튼을 눌러 주세요.';}},6000);
+  }
+  function permission(Type){return typeof Type?.requestPermission==='function'?Type.requestPermission():Promise.resolve(Type?'granted':'unavailable');}
   start.addEventListener('click',async()=>{
     start.disabled=true;
     try{
-      const result=await window.DeviceMotionEvent.requestPermission();
-      if(result==='granted'){connect();start.hidden=true;status.textContent='';}
-      else{status.textContent='동작 접근이 꺼져 있어요. 아래 버튼으로 체험해 주세요.';demo.hidden=false;start.hidden=true;}
-    }catch{status.textContent='흔들기를 연결하지 못했어요. 아래 버튼으로 체험해 주세요.';demo.hidden=false;start.hidden=true;}
+      // Both requests begin inside the tap gesture, as required on iOS.
+      const results=await Promise.allSettled([permission(window.DeviceMotionEvent),permission(window.DeviceOrientationEvent)]);
+      const allowed=results.map(r=>r.status==='fulfilled'&&r.value==='granted');
+      connect(...allowed);start.hidden=true;status.textContent=allowed[0]?'':'동작 접근이 꺼져 있어요. 아래 버튼으로 체험해 주세요.';
+      if(!allowed[0])demo.hidden=false;
+    }catch{start.hidden=true;demo.hidden=false;status.textContent='아래 버튼으로 체험해 주세요.';}
     start.disabled=false;
   });
   ready.then(()=>{
     if(!assets.length){status.textContent='글자를 불러오지 못했어요. 새로고침해 주세요.';return;}
     enabled=true;status.textContent='';
-    const Motion=window.DeviceMotionEvent;
-    if(!Motion){demo.hidden=false;}
-    else if(typeof Motion.requestPermission==='function'){start.hidden=false;status.textContent='버튼을 누르고 동작 접근을 허용해 주세요.';}
-    else connect();
-    if(matchMedia('(pointer: fine)').matches)demo.hidden=false;
+    if(typeof window.DeviceMotionEvent?.requestPermission==='function'||typeof window.DeviceOrientationEvent?.requestPermission==='function'){
+      start.hidden=false;status.textContent='버튼을 누르고 동작 접근을 허용해 주세요.';
+    }else connect(!!window.DeviceMotionEvent,!!window.DeviceOrientationEvent);
+    if(!window.DeviceMotionEvent||matchMedia('(pointer: fine)').matches)demo.hidden=false;
   });
-  demo.addEventListener('click',()=>shake());
-  document.addEventListener('visibilitychange',()=>{previous=null;if(document.hidden){cancelAnimationFrame(frame);frame=0;}else wake();});
+  demo.addEventListener('click',()=>{
+    if(!revealed){reveal();return;}
+    demoCount++;targetGravity={x:demoCount%2?.85:-.85,y:.4};demoUntil=performance.now()+1600;
+  });
+  document.addEventListener('visibilitychange',()=>{previous=null;filter=null;inertia={x:0,y:0};if(document.hidden){cancelAnimationFrame(frame);frame=0;}else wake();});
   window.addEventListener('resize',resize);resize();
 })();
