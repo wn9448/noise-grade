@@ -20,31 +20,65 @@
     const c=Math.abs(Math.cos(p.angle)),s=Math.abs(Math.sin(p.angle));
     return {x:(c*p.w+s*p.h)/2,y:(s*p.w+c*p.h)/2};
   }
+  // Density is chosen once per page visit; shaking never changes this set.
+  const densityBand=Math.floor(Math.random()*3);
+  function overlaps(p,x=p.x,y=p.y,angle=p.angle){
+    const box=bounds({...p,angle});
+    return items.some(q=>{
+      if(q===p)return false;const other=bounds(q);
+      return Math.abs(x-q.x)<box.x+other.x+2-.001 && Math.abs(y-q.y)<box.y+other.y+2-.001;
+    });
+  }
+  function pack(list,maxWidth){
+    let x=4,y=4,rowHeight=0;
+    for(const p of list){
+      if(x+p.w>maxWidth-4){x=4;y+=rowHeight+4;rowHeight=0;}
+      p.x=x+p.w/2;p.y=y+p.h/2;x+=p.w+4;rowHeight=Math.max(rowHeight,p.h);
+    }
+    return y+rowHeight+4;
+  }
+  function fit(list,targetHeight){
+    let total=pack(list,width);
+    while(total>targetHeight){list.forEach(p=>{p.w*=.97;p.h*=.97;});total=pack(list,width);}
+    return total;
+  }
   function resize(){
-    const oldW=width,oldH=height;width=innerWidth;height=innerHeight;
+    width=innerWidth;height=innerHeight;
     const ratio=Math.min(devicePixelRatio||1,2);canvas.width=Math.round(width*ratio);canvas.height=Math.round(height*ratio);
     ctx.setTransform(ratio,0,0,ratio,0,0);
-    items.forEach(p=>{
-      const scale=Math.min(1,width/oldW,height/oldH);p.w*=scale;p.h*=scale;p.radius*=scale;
-      p.x*=width/oldW;p.y*=height/oldH;const b=bounds(p);
-      p.x=clamp(p.x,b.x+2,width-b.x-2);if(p.entered)p.y=clamp(p.y,b.y+2,height-b.y-2);
-    });wake();
+    if(items.length){
+      items.forEach(p=>{p.angle=0;p.w=Math.min(p.w,width*.42);p.h=p.w*p.image.height/p.image.width;});
+      const total=fit(items,height-12);
+      items.forEach(p=>{p.y+=height-total-4;p.entered=true;p.vx=0;p.vy=0;p.spin=0;});
+    }
+    wake();
   }
   function wake(){if(!frame&&!document.hidden){lastTime=0;frame=requestAnimationFrame(draw);}}
   function reveal(){
     if(revealed||!assets.length)return;
     revealed=true;intro.hidden=true;
-    // Exactly one set of the PDF's eleven original transparent images.
-    items=assets.map((image,i)=>{
-      const w=Math.min(width*.28,height*.18,155)*random(.78,1.13),h=w*image.height/image.width;
-      return {image,w,h,radius:Math.min(w,h)*.40,x:random(w,width-w),y:reduced?random(h,height-h):-h-i*height*.10,
-        vx:random(-45,45),vy:random(80,140),angle:random(-.25,.25),spin:random(-.8,.8),entered:reduced};
-    });wake();
+    const ranges=[[5,9],[13,21],[28,40]], range=ranges[densityBand];
+    const count=Math.floor(random(range[0],range[1]+1));
+    const fill=[random(.24,.36),random(.50,.65),random(.86,.96)][densityBand];
+    // Alternating large and small artwork makes the size contrast unmistakable.
+    items=Array.from({length:count},(_,i)=>{
+      const image=assets[Math.floor(random(0,assets.length))];
+      const factor=i%3===0?random(1.25,1.6):i%3===1?random(.45,.65):random(.8,1.05);
+      const w=Math.min(width*.30,150)*factor;
+      return {image,w,h:w*image.height/image.width,x:0,y:0,vx:0,vy:0,angle:0,spin:0,entered:false};
+    });
+    // A shelf layout guarantees the randomly chosen set can fit in this frame.
+    items.sort((a,b)=>b.h-a.h);
+    const natural=pack(items,width),grow=Math.min(1.7,Math.sqrt(height*fill/natural));
+    items.forEach(p=>{p.w=Math.min(width*.43,p.w*grow);p.h=p.w*p.image.height/p.image.width;});
+    const total=fit(items,height*fill);
+    items.forEach(p=>{p.y+=reduced?height-total-4:-total-20;p.entered=reduced;});
+    wake();
   }
   function shake(dx=0,dy=0){
     if(!enabled||!assets.length)return;
     if(!revealed){reveal();return;}
-    // Later shakes only stir the existing objects; never append new ones.
+    if(items.some(p=>!p.entered))return;
     items.forEach(p=>{
       const strength=reduced?.28:1;
       p.vx=clamp(p.vx+(dx*17+random(-250,250))*strength,-850,850);
@@ -52,27 +86,47 @@
       p.spin=clamp(p.spin+random(-3,3)*strength,-5,5);
     });wake();
   }
-  function constrain(p){
-    const b=bounds(p),left=b.x+2,right=width-b.x-2,bottom=height-b.y-2;
-    if(p.x<left){p.x=left;p.vx=Math.abs(p.vx)*.5;p.spin*=.7;}
-    if(p.x>right){p.x=right;p.vx=-Math.abs(p.vx)*.5;p.spin*=.7;}
-    if(!p.entered&&p.y>=b.y+2)p.entered=true;
-    if(p.entered&&p.y<b.y+2){p.y=b.y+2;p.vy=Math.abs(p.vy)*.4;}
-    if(p.y>bottom){p.y=bottom;p.vy=-Math.abs(p.vy)*.3;p.vx*=.94;p.spin*=.90;if(Math.abs(p.vy)<20)p.vy=0;}
+  function moveAxis(p,axis,delta){
+    if(!delta)return;
+    const b=bounds(p),horizontal=axis==='x',extent=horizontal?b.x:b.y;
+    let next=p[axis]+delta,contact=null;
+    const limit=horizontal?width:height;
+    if(horizontal||p.entered)next=Math.max(extent+2,next);
+    next=Math.min(limit-extent-2,next);
+    // Sweep full sprite bounds, including transparent margins. This is stricter
+    // than silhouette collision and guarantees no visible lettering overlaps.
+    for(const q of items){
+      if(q===p)continue;const qb=bounds(q);
+      const cross=horizontal?'y':'x',crossExtent=horizontal?b.y:b.x,qCross=horizontal?qb.y:qb.x;
+      if(Math.abs(p[cross]-q[cross])>=crossExtent+qCross+2-.001)continue;
+      const otherExtent=horizontal?qb.x:qb.y;
+      if(delta>0 && q[axis]>=p[axis]){
+        const stop=q[axis]-otherExtent-extent-2;
+        if(next>stop){next=Math.max(p[axis],stop);contact=q;}
+      }else if(delta<0 && q[axis]<=p[axis]){
+        const stop=q[axis]+otherExtent+extent+2;
+        if(next<stop){next=Math.min(p[axis],stop);contact=q;}
+      }
+    }
+    const hit=Math.abs(next-(p[axis]+delta))>.001;
+    p[axis]=next;
+    if(hit){const velocity=horizontal?'vx':'vy';if(contact)contact[velocity]+=p[velocity]*.12;
+      p[velocity]*=-.18;if(Math.abs(p[velocity])<25)p[velocity]=0;p.spin*=.8;}
   }
   function step(dt){
-    for(const p of items){p.vy+=900*dt;p.vx*=Math.pow(.995,dt*60);p.x+=p.vx*dt;p.y+=p.vy*dt;p.angle+=p.spin*dt;p.spin*=Math.pow(.997,dt*60);constrain(p);}
-    // Soft body contacts keep letters from all settling on the same point.
-    for(let pass=0;pass<3;pass++){
-      for(let i=0;i<items.length;i++)for(let j=i+1;j<items.length;j++){
-        const a=items[i],b=items[j];if(!a.entered||!b.entered)continue;
-        const dx=b.x-a.x,dy=b.y-a.y,d=Math.hypot(dx,dy)||.001,min=a.radius+b.radius;
-        if(d>=min)continue;const nx=d===.001?1:dx/d,ny=d===.001?0:dy/d,push=(min-d)*.5;
-        a.x-=nx*push;a.y-=ny*push;b.x+=nx*push;b.y+=ny*push;
-        const speed=(b.vx-a.vx)*nx+(b.vy-a.vy)*ny;
-        if(speed<0){const force=-speed*.58;a.vx-=force*nx;a.vy-=force*ny;b.vx+=force*nx;b.vy+=force*ny;a.spin*=.98;b.spin*=.98;}
+    const landed=items.every(p=>p.entered);
+    // Bottom bodies move first so an entire stack can settle together.
+    const ordered=[...items].sort((a,b)=>b.y-a.y);
+    for(const p of ordered){
+      p.vy=clamp(p.vy+900*dt,-950,950);p.vx*=Math.pow(.99,dt*60);
+      moveAxis(p,'x',p.vx*dt);moveAxis(p,'y',p.vy*dt);
+      const b=bounds(p);if(!p.entered&&p.y>=b.y+2)p.entered=true;
+      if(landed&&p.spin){
+        const angle=p.angle+p.spin*dt,box=bounds({...p,angle});
+        if(p.x-box.x>=2&&p.x+box.x<=width-2&&p.y-box.y>=2&&p.y+box.y<=height-2&&!overlaps(p,p.x,p.y,angle))p.angle=angle;
+        else p.spin*=-.35;
+        p.spin*=Math.pow(.995,dt*60);
       }
-      items.forEach(constrain);
     }
   }
   function draw(time){
